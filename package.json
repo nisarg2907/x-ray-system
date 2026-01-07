@@ -1,0 +1,11 @@
+{
+  "name": "x-ray-system",
+  "version": "1.0.0",
+  "description": "X-Ray SDK + API for debugging multi-step decision systems",
+  "private": true,
+  "scripts": {
+    "install:all": "pnpm install",
+    "build:all": "pnpm --recursive build"
+  }
+}
+

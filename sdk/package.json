@@ -1,0 +1,25 @@
+{
+  "name": "@xray/sdk",
+  "version": "1.0.0",
+  "description": "X-Ray SDK for debugging multi-step decision systems",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["debugging", "observability", "decision-systems"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-fetch": "^2.7.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/node-fetch": "^2.6.11",
+    "@types/uuid": "^9.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+
