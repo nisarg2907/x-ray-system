@@ -1,10 +1,8 @@
 /**
- * Run model - data access layer using TypeORM.
+ * Run model - data access layer.
  */
 
-import { Repository } from 'typeorm';
-import { AppDataSource } from '../db/data-source';
-import { Run, RunStatus } from '../entities';
+import { pool } from '../db/connection';
 
 export interface RunRecord {
   run_id: string;
@@ -12,23 +10,18 @@ export interface RunRecord {
   input: any;
   started_at: string;
   ended_at?: string;
-  status: RunStatus;
-}
-
-function getRepository(): Repository<Run> {
-  return AppDataSource.getRepository(Run);
+  status: 'running' | 'success' | 'error';
 }
 
 export async function createRun(run: RunRecord): Promise<void> {
-  const repo = getRepository();
-  await repo.save({
-    run_id: run.run_id,
-    pipeline: run.pipeline,
-    input: run.input,
-    started_at: new Date(run.started_at),
-    ended_at: run.ended_at ? new Date(run.ended_at) : undefined,
-    status: run.status,
-  });
+  await pool.query(
+    `INSERT INTO runs (run_id, pipeline, input, started_at, status)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (run_id) DO UPDATE SET
+       ended_at = EXCLUDED.ended_at,
+       status = EXCLUDED.status`,
+    [run.run_id, run.pipeline, JSON.stringify(run.input), run.started_at, run.status]
+  );
 }
 
 /**
@@ -40,14 +33,19 @@ export async function ensureRunExists(runId: string, pipeline?: string): Promise
     const existing = await getRun(runId);
     if (existing) return;
 
-    const repo = getRepository();
-    await repo.save({
-      run_id: runId,
-      pipeline: pipeline || 'unknown',
-      input: { auto_created: true },
-      started_at: new Date(),
-      status: 'running' as RunStatus,
-    });
+    // Create a placeholder run - the actual run creation might be in flight
+    await pool.query(
+      `INSERT INTO runs (run_id, pipeline, input, started_at, status)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (run_id) DO NOTHING`,
+      [
+        runId,
+        pipeline || 'unknown',
+        JSON.stringify({ auto_created: true }),
+        new Date().toISOString(),
+        'running',
+      ]
+    );
   } catch (error: any) {
     // Log but don't throw - the actual run creation will handle it
     const errorMessage = error?.message || error?.toString() || 'Unknown error';
@@ -56,63 +54,77 @@ export async function ensureRunExists(runId: string, pipeline?: string): Promise
 }
 
 export async function updateRun(runId: string, updates: { ended_at?: string; status?: string }): Promise<void> {
-  const repo = getRepository();
-  const updateData: Partial<Run> = {};
-  
+  const updatesList: string[] = [];
+  const values: any[] = [];
+  let paramCount = 1;
+
   if (updates.ended_at) {
-    updateData.ended_at = new Date(updates.ended_at);
+    updatesList.push(`ended_at = $${paramCount++}`);
+    values.push(updates.ended_at);
   }
   if (updates.status) {
-    updateData.status = updates.status as RunStatus;
+    updatesList.push(`status = $${paramCount++}`);
+    values.push(updates.status);
   }
 
-  if (Object.keys(updateData).length > 0) {
-    await repo.update({ run_id: runId }, updateData);
-  }
+  if (updatesList.length === 0) return;
+
+  values.push(runId);
+  await pool.query(
+    `UPDATE runs SET ${updatesList.join(', ')} WHERE run_id = $${paramCount}`,
+    values
+  );
 }
 
 export async function getRun(runId: string): Promise<RunRecord | null> {
-  const repo = getRepository();
-  const run = await repo.findOne({ where: { run_id: runId } });
+  const result = await pool.query(
+    `SELECT run_id, pipeline, input, started_at, ended_at, status
+     FROM runs WHERE run_id = $1`,
+    [runId]
+  );
 
-  if (!run) return null;
+  if (result.rows.length === 0) return null;
 
+  const row = result.rows[0];
   return {
-    run_id: run.run_id,
-    pipeline: run.pipeline,
-    input: run.input,
-    started_at: run.started_at.toISOString(),
-    ended_at: run.ended_at?.toISOString(),
-    status: run.status,
+    run_id: row.run_id,
+    pipeline: row.pipeline,
+    input: row.input,
+    started_at: row.started_at,
+    ended_at: row.ended_at,
+    status: row.status,
   };
 }
 
 export async function listRuns(filters?: { pipeline?: string; status?: string; limit?: number }): Promise<RunRecord[]> {
-  const repo = getRepository();
-  const queryBuilder = repo.createQueryBuilder('run');
+  let query = `SELECT run_id, pipeline, input, started_at, ended_at, status FROM runs WHERE 1=1`;
+  const values: any[] = [];
+  let paramCount = 1;
 
   if (filters?.pipeline) {
-    queryBuilder.andWhere('run.pipeline = :pipeline', { pipeline: filters.pipeline });
+    query += ` AND pipeline = $${paramCount++}`;
+    values.push(filters.pipeline);
   }
 
   if (filters?.status) {
-    queryBuilder.andWhere('run.status = :status', { status: filters.status });
+    query += ` AND status = $${paramCount++}`;
+    values.push(filters.status);
   }
 
-  queryBuilder.orderBy('run.started_at', 'DESC');
+  query += ` ORDER BY started_at DESC`;
 
   if (filters?.limit) {
-    queryBuilder.limit(filters.limit);
+    query += ` LIMIT $${paramCount++}`;
+    values.push(filters.limit);
   }
 
-  const runs = await queryBuilder.getMany();
-
-  return runs.map((run) => ({
-    run_id: run.run_id,
-    pipeline: run.pipeline,
-    input: run.input,
-    started_at: run.started_at.toISOString(),
-    ended_at: run.ended_at?.toISOString(),
-    status: run.status,
+  const result = await pool.query(query, values);
+  return result.rows.map((row) => ({
+    run_id: row.run_id,
+    pipeline: row.pipeline,
+    input: row.input,
+    started_at: row.started_at,
+    ended_at: row.ended_at,
+    status: row.status,
   }));
 }

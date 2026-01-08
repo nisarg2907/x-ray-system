@@ -1,28 +1,19 @@
 /**
  * Database initialization script.
- * Run this separately if migrations fail on server startup.
+ * Run this separately if schema auto-initialization fails.
  */
 
-import 'reflect-metadata';
-import { AppDataSource } from './data-source';
-import { runMigrations } from './migrate';
+import { pool } from './connection';
+import { CREATE_SCHEMA } from './schema';
 
 async function init() {
   try {
-    console.log('Initializing TypeORM DataSource...');
-    await AppDataSource.initialize();
-    console.log('✅ TypeORM DataSource initialized');
-
-    console.log('Running migrations...');
-    await runMigrations();
-    
-    await AppDataSource.destroy();
+    console.log('Initializing database schema...');
+    await pool.query(CREATE_SCHEMA);
+    console.log('✅ Database schema initialized successfully');
     process.exit(0);
   } catch (error: any) {
     console.error('❌ Error initializing database:', error.message);
-    if (AppDataSource.isInitialized) {
-      await AppDataSource.destroy();
-    }
     process.exit(1);
   }
 }

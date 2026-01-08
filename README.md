@@ -200,14 +200,12 @@ x-ray-system/
 │   │   ├── step.ts   # Step class
 │   │   └── client.ts # HTTP client
 │   └── package.json
-├── backend/          # Backend API (Express + TypeORM + PostgreSQL)
+├── backend/          # Backend API (Express + PostgreSQL)
 │   ├── src/
 │   │   ├── index.ts           # Server entry
 │   │   ├── routes/            # API routes
-│   │   ├── models/            # Data access layer (TypeORM repositories)
-│   │   ├── entities/          # TypeORM entities
-│   │   ├── migrations/        # TypeORM migration files
-│   │   └── db/                # Database configuration
+│   │   ├── models/            # Data access layer
+│   │   └── db/                # Database schema
 │   └── package.json
 ├── demo/             # Demo pipeline
 │   └── src/index.ts
@@ -216,30 +214,6 @@ x-ray-system/
 ```
 
 ## Development
-
-### Database Migrations
-
-The backend uses TypeORM migrations to manage the database schema.
-
-**Run migrations manually:**
-```bash
-cd backend
-pnpm run migration:run
-```
-
-**Generate a new migration (after changing entities):**
-```bash
-cd backend
-pnpm run migration:generate src/migrations/YourMigrationName
-```
-
-**Revert last migration:**
-```bash
-cd backend
-pnpm run migration:revert
-```
-
-Migrations run automatically on server startup. See `backend/src/migrations/README.md` for more details.
 
 ### Building
 

@@ -1,12 +1,10 @@
 /**
- * Step model - data access layer using TypeORM.
+ * Step model - data access layer.
  */
 
-import { Repository } from 'typeorm';
-import { AppDataSource } from '../db/data-source';
-import { Step, StepType, StepSummary } from '../entities';
+import { pool } from '../db/connection';
 
-export type { StepType } from '../entities';
+export type StepType = 'filter' | 'rank' | 'generate' | 'select';
 
 export interface StepRecord {
   step_id: string;
@@ -25,25 +23,27 @@ export interface StepSummaryRecord {
   rejection_breakdown: Record<string, number>;
 }
 
-function getStepRepository(): Repository<Step> {
-  return AppDataSource.getRepository(Step);
-}
-
-function getStepSummaryRepository(): Repository<StepSummary> {
-  return AppDataSource.getRepository(StepSummary);
-}
-
 export async function createStep(step: StepRecord): Promise<void> {
-  const repo = getStepRepository();
-  await repo.save({
-    step_id: step.step_id,
-    run_id: step.run_id,
-    name: step.name,
-    type: step.type,
-    input_count: step.input_count,
-    output_count: step.output_count,
-    metadata: step.metadata,
-  });
+  await pool.query(
+    `INSERT INTO steps (step_id, run_id, name, type, input_count, output_count, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (step_id) DO UPDATE SET
+       run_id = EXCLUDED.run_id,
+       name = EXCLUDED.name,
+       type = EXCLUDED.type,
+       input_count = COALESCE(EXCLUDED.input_count, steps.input_count),
+       output_count = COALESCE(EXCLUDED.output_count, steps.output_count),
+       metadata = EXCLUDED.metadata`,
+    [
+      step.step_id,
+      step.run_id,
+      step.name,
+      step.type,
+      step.input_count,
+      step.output_count,
+      JSON.stringify(step.metadata),
+    ]
+  );
 }
 
 /**
@@ -55,16 +55,24 @@ export async function ensureStepExists(stepId: string, runId: string): Promise<v
     const existing = await getStep(stepId);
     if (existing) return;
 
-    const repo = getStepRepository();
-    await repo.save({
-      step_id: stepId,
-      run_id: runId,
-      name: 'auto-created',
-      type: 'generate',
-      metadata: { auto_created: true },
-    });
+    // Create a placeholder step - the actual step creation might be in flight
+    // We'll use minimal info and let the real step creation update it
+    // If run doesn't exist, this will fail silently (run should exist by this point)
+    await pool.query(
+      `INSERT INTO steps (step_id, run_id, name, type, metadata)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (step_id) DO NOTHING`,
+      [
+        stepId,
+        runId,
+        'auto-created', // Placeholder name
+        'generate', // Default type (least restrictive)
+        JSON.stringify({ auto_created: true }),
+      ]
+    );
   } catch (error: any) {
     // If run doesn't exist or other error, log but don't throw
+    // The actual step creation will handle it
     const errorMessage = error?.message || error?.toString() || 'Unknown error';
     if (!errorMessage.includes('foreign key constraint') && !errorMessage.includes('23503')) {
       console.warn(`Warning: Could not ensure step exists: ${errorMessage}`);
@@ -78,75 +86,98 @@ export async function updateStepSummary(
   inputCount?: number,
   outputCount?: number
 ): Promise<void> {
-  const summaryRepo = getStepSummaryRepository();
-  
-  // Upsert step summary
-  await summaryRepo.save({
-    step_id: stepId,
-    rejected: summary.rejected,
-    accepted: summary.accepted,
-    rejection_breakdown: summary.rejection_breakdown,
-  });
+  // Update step_summaries table
+  await pool.query(
+    `INSERT INTO step_summaries (step_id, rejected, accepted, rejection_breakdown, updated_at)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (step_id) DO UPDATE SET
+       rejected = EXCLUDED.rejected,
+       accepted = EXCLUDED.accepted,
+       rejection_breakdown = EXCLUDED.rejection_breakdown,
+       updated_at = NOW()`,
+    [
+      stepId,
+      summary.rejected,
+      summary.accepted,
+      JSON.stringify(summary.rejection_breakdown),
+    ]
+  );
 
-  // Update step's input_count and output_count if provided
+  // Also update input_count and output_count in steps table if provided
   if (inputCount !== undefined || outputCount !== undefined) {
-    const stepRepo = getStepRepository();
-    const updateData: Partial<Step> = {};
+    const updates: string[] = [];
+    const values: any[] = [];
+    let paramCount = 1;
+
     if (inputCount !== undefined) {
-      updateData.input_count = inputCount;
+      updates.push(`input_count = $${paramCount++}`);
+      values.push(inputCount);
     }
     if (outputCount !== undefined) {
-      updateData.output_count = outputCount;
+      updates.push(`output_count = $${paramCount++}`);
+      values.push(outputCount);
     }
-    await stepRepo.update({ step_id: stepId }, updateData);
+
+    values.push(stepId);
+    await pool.query(
+      `UPDATE steps SET ${updates.join(', ')} WHERE step_id = $${paramCount}`,
+      values
+    );
   }
 }
 
 export async function getStep(stepId: string): Promise<StepRecord | null> {
-  const repo = getStepRepository();
-  const step = await repo.findOne({ where: { step_id: stepId } });
+  const result = await pool.query(
+    `SELECT step_id, run_id, name, type, input_count, output_count, metadata
+     FROM steps WHERE step_id = $1`,
+    [stepId]
+  );
 
-  if (!step) return null;
+  if (result.rows.length === 0) return null;
 
+  const row = result.rows[0];
   return {
-    step_id: step.step_id,
-    run_id: step.run_id,
-    name: step.name,
-    type: step.type,
-    input_count: step.input_count,
-    output_count: step.output_count,
-    metadata: step.metadata,
+    step_id: row.step_id,
+    run_id: row.run_id,
+    name: row.name,
+    type: row.type,
+    input_count: row.input_count,
+    output_count: row.output_count,
+    metadata: row.metadata,
   };
 }
 
 export async function listSteps(filters?: { run_id?: string; type?: StepType; name?: string }): Promise<StepRecord[]> {
-  const repo = getStepRepository();
-  const queryBuilder = repo.createQueryBuilder('step');
+  let query = `SELECT step_id, run_id, name, type, input_count, output_count, metadata FROM steps WHERE 1=1`;
+  const values: any[] = [];
+  let paramCount = 1;
 
   if (filters?.run_id) {
-    queryBuilder.andWhere('step.run_id = :run_id', { run_id: filters.run_id });
+    query += ` AND run_id = $${paramCount++}`;
+    values.push(filters.run_id);
   }
 
   if (filters?.type) {
-    queryBuilder.andWhere('step.type = :type', { type: filters.type });
+    query += ` AND type = $${paramCount++}`;
+    values.push(filters.type);
   }
 
   if (filters?.name) {
-    queryBuilder.andWhere('step.name = :name', { name: filters.name });
+    query += ` AND name = $${paramCount++}`;
+    values.push(filters.name);
   }
 
-  queryBuilder.orderBy('step.created_at', 'ASC');
+  query += ` ORDER BY created_at ASC`;
 
-  const steps = await queryBuilder.getMany();
-
-  return steps.map((step) => ({
-    step_id: step.step_id,
-    run_id: step.run_id,
-    name: step.name,
-    type: step.type,
-    input_count: step.input_count,
-    output_count: step.output_count,
-    metadata: step.metadata,
+  const result = await pool.query(query, values);
+  return result.rows.map((row) => ({
+    step_id: row.step_id,
+    run_id: row.run_id,
+    name: row.name,
+    type: row.type,
+    input_count: row.input_count,
+    output_count: row.output_count,
+    metadata: row.metadata,
   }));
 }
 
@@ -155,52 +186,41 @@ export async function listSteps(filters?: { run_id?: string; type?: StepType; na
  * This is a cross-pipeline query example.
  */
 export async function getStepSummary(stepId: string): Promise<StepSummaryRecord | null> {
-  const repo = getStepSummaryRepository();
-  const summary = await repo.findOne({ where: { step_id: stepId } });
+  const result = await pool.query(
+    `SELECT step_id, rejected, accepted, rejection_breakdown
+     FROM step_summaries WHERE step_id = $1`,
+    [stepId]
+  );
 
-  if (!summary) return null;
+  if (result.rows.length === 0) return null;
 
+  const row = result.rows[0];
   return {
-    step_id: summary.step_id,
-    rejected: summary.rejected,
-    accepted: summary.accepted,
-    rejection_breakdown: summary.rejection_breakdown || {},
+    step_id: row.step_id,
+    rejected: row.rejected,
+    accepted: row.accepted,
+    rejection_breakdown: row.rejection_breakdown || {},
   };
 }
 
 export async function findFilteringStepsWithHighRejectionRate(threshold: number = 0.9): Promise<any[]> {
-  const stepRepo = getStepRepository();
-  const summaryRepo = getStepSummaryRepository();
+  const result = await pool.query(
+    `SELECT 
+       s.step_id,
+       s.run_id,
+       s.name,
+       s.type,
+       s.metadata,
+       ss.rejected,
+       ss.accepted,
+       (ss.rejected::float / NULLIF(ss.rejected + ss.accepted, 0)) as rejection_rate
+     FROM steps s
+     JOIN step_summaries ss ON s.step_id = ss.step_id
+     WHERE s.type = 'filter'
+       AND (ss.rejected::float / NULLIF(ss.rejected + ss.accepted, 0)) > $1
+     ORDER BY rejection_rate DESC`,
+    [threshold]
+  );
 
-  const results = await stepRepo
-    .createQueryBuilder('step')
-    .innerJoin('step_summaries', 'summary', 'summary.step_id = step.step_id')
-    .where('step.type = :type', { type: 'filter' })
-    .andWhere(
-      '(summary.rejected::float / NULLIF(summary.rejected + summary.accepted, 0)) > :threshold',
-      { threshold }
-    )
-    .select([
-      'step.step_id',
-      'step.run_id',
-      'step.name',
-      'step.type',
-      'step.metadata',
-      'summary.rejected',
-      'summary.accepted',
-      '(summary.rejected::float / NULLIF(summary.rejected + summary.accepted, 0)) as rejection_rate',
-    ])
-    .orderBy('rejection_rate', 'DESC')
-    .getRawMany();
-
-  return results.map((row) => ({
-    step_id: row.step_step_id,
-    run_id: row.step_run_id,
-    name: row.step_name,
-    type: row.step_type,
-    metadata: row.step_metadata,
-    rejected: row.summary_rejected,
-    accepted: row.summary_accepted,
-    rejection_rate: parseFloat(row.rejection_rate),
-  }));
+  return result.rows;
 }

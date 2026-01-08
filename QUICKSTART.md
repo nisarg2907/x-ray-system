@@ -70,20 +70,13 @@ cp .env.example .env
 
 ## 4. Initialize Database Schema
 
-The database schema is managed by TypeORM migrations and will run automatically when you start the server.
-
-**To run migrations manually:**
 ```bash
 cd backend
 pnpm run build
-pnpm run migration:run
-```
-
-**Or use the init script:**
-```bash
-cd backend
 pnpm run init-db
 ```
+
+Or the schema will auto-initialize when you start the server.
 
 ## 5. Start Backend
 

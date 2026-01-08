@@ -2,11 +2,10 @@
  * X-Ray Backend API Server
  */
 
-import 'reflect-metadata';
 import express from 'express';
 import cors from 'cors';
-import { AppDataSource } from './db/data-source';
-import { runMigrations } from './db/migrate';
+import { pool } from './db/connection';
+import { CREATE_SCHEMA } from './db/schema';
 import runsRouter from './routes/runs';
 import stepsRouter from './routes/steps';
 
@@ -20,12 +19,8 @@ app.use(express.json());
 // Health check
 app.get('/health', async (req, res) => {
   try {
-    if (AppDataSource.isInitialized) {
-      await AppDataSource.query('SELECT 1');
-      res.json({ status: 'healthy', database: 'connected' });
-    } else {
-      res.status(503).json({ status: 'unhealthy', database: 'not_initialized' });
-    }
+    await pool.query('SELECT 1');
+    res.json({ status: 'healthy', database: 'connected' });
   } catch (error) {
     res.status(500).json({ status: 'unhealthy', database: 'disconnected' });
   }
@@ -38,14 +33,8 @@ app.use('/steps', stepsRouter);
 // Initialize database schema on startup
 async function initializeDatabase() {
   try {
-    // Initialize TypeORM
-    if (!AppDataSource.isInitialized) {
-      await AppDataSource.initialize();
-      console.log('✅ TypeORM DataSource initialized');
-    }
-
-    // Run migrations
-    await runMigrations();
+    await pool.query(CREATE_SCHEMA);
+    console.log('✅ Database schema initialized');
   } catch (error: any) {
     const errorMessage = error?.message || error?.toString() || 'Unknown error';
     console.error('❌ Error initializing database:', errorMessage);
@@ -72,14 +61,6 @@ async function start() {
     console.log(`Health check: http://localhost:${PORT}/health`);
   });
 }
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  if (AppDataSource.isInitialized) {
-    await AppDataSource.destroy();
-  }
-  process.exit(0);
-});
 
 start().catch((error) => {
   console.error('Failed to start server:', error);

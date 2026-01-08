@@ -1,10 +1,8 @@
 /**
- * Candidate model - data access layer using TypeORM.
+ * Candidate model - data access layer.
  */
 
-import { Repository } from 'typeorm';
-import { AppDataSource } from '../db/data-source';
-import { Candidate } from '../entities';
+import { pool } from '../db/connection';
 
 export interface CandidateRecord {
   candidate_id: string;
@@ -14,48 +12,72 @@ export interface CandidateRecord {
   reason?: string;
 }
 
-function getRepository(): Repository<Candidate> {
-  return AppDataSource.getRepository(Candidate);
-}
-
 export async function createCandidate(candidate: CandidateRecord): Promise<void> {
-  const repo = getRepository();
-  await repo.save({
-    candidate_id: candidate.candidate_id,
-    step_id: candidate.step_id,
-    decision: candidate.decision,
-    score: candidate.score,
-    reason: candidate.reason,
-  });
+  await pool.query(
+    `INSERT INTO candidates (candidate_id, step_id, decision, score, reason)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (candidate_id, step_id) DO UPDATE SET
+       decision = EXCLUDED.decision,
+       score = EXCLUDED.score,
+       reason = EXCLUDED.reason`,
+    [
+      candidate.candidate_id,
+      candidate.step_id,
+      candidate.decision,
+      candidate.score,
+      candidate.reason,
+    ]
+  );
 }
 
 export async function createCandidatesBulk(candidates: CandidateRecord[]): Promise<void> {
   if (candidates.length === 0) return;
-  
-  const repo = getRepository();
-  await repo.save(
-    candidates.map((c) => ({
-      candidate_id: c.candidate_id,
-      step_id: c.step_id,
-      decision: c.decision,
-      score: c.score,
-      reason: c.reason,
-    }))
-  );
+
+  // Use a transaction for bulk insert
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    for (const candidate of candidates) {
+      await client.query(
+        `INSERT INTO candidates (candidate_id, step_id, decision, score, reason)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (candidate_id, step_id) DO UPDATE SET
+           decision = EXCLUDED.decision,
+           score = EXCLUDED.score,
+           reason = EXCLUDED.reason`,
+        [
+          candidate.candidate_id,
+          candidate.step_id,
+          candidate.decision,
+          candidate.score,
+          candidate.reason,
+        ]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function getCandidatesByStep(stepId: string): Promise<CandidateRecord[]> {
-  const repo = getRepository();
-  const candidates = await repo.find({
-    where: { step_id: stepId },
-    order: { created_at: 'ASC' },
-  });
+  const result = await pool.query(
+    `SELECT candidate_id, step_id, decision, score, reason
+     FROM candidates WHERE step_id = $1
+     ORDER BY created_at ASC`,
+    [stepId]
+  );
 
-  return candidates.map((c) => ({
-    candidate_id: c.candidate_id,
-    step_id: c.step_id,
-    decision: c.decision,
-    score: c.score ? parseFloat(c.score.toString()) : undefined,
-    reason: c.reason,
+  return result.rows.map((row) => ({
+    candidate_id: row.candidate_id,
+    step_id: row.step_id,
+    decision: row.decision,
+    score: row.score,
+    reason: row.reason,
   }));
 }
