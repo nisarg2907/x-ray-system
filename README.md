@@ -80,7 +80,53 @@ The demo shows a product matching pipeline that makes a bad decision (matches ph
 
 ## Architecture
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed system design, trade-offs, and queryability guarantees.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the concise architecture overview.
+
+### Detailed Design
+
+**Queue Architecture:**
+- BullMQ with Redis for job persistence
+- Three queues: `runs`, `steps`, `candidates`
+- Separate worker process handles job execution
+- Automatic retries (3 attempts with exponential backoff)
+- Job retention: completed jobs 24h, failed jobs 7 days
+
+**Race Condition Handling:**
+- `ensureRunExists()` creates placeholder runs if step arrives before run
+- `ensureStepExists()` creates placeholder steps if summary/candidate arrives before step
+- Uses `ON CONFLICT DO NOTHING` for idempotency
+
+**Developer Experience:**
+- **Minimal instrumentation**: 3-5 lines of code for basic observability
+- **Full instrumentation**: Complete candidate tracking with sampling helpers
+- **Backend unavailability**: SDK fails silently, pipeline continues normally
+- **Optional buffering**: In-memory buffer for retry attempts
+
+**Real-World Application:**
+The system is designed for scenarios like:
+- **Competitor Discovery**: Track keyword generation → search → filtering → ranking → selection
+- **Listing Optimization**: Track analysis → pattern extraction → gap identification → generation → scoring
+- **Product Categorization**: Track attribute extraction → category matching → confidence scoring → selection
+
+**Performance Characteristics:**
+- Runs and steps: ~1 MB/day at 100 runs/day scale
+- Summaries: Additional ~1 MB/day
+- Full candidate logging: ~50 MB per run (not sustainable)
+- Sampling (top-10, bottom-10, random-20): ~400 KB/run (manageable)
+
+**Failure Scenarios:**
+- Redis crashes: API returns 503, jobs lost if persistence disabled
+- Worker crashes: Jobs retry automatically, multiple workers for redundancy
+- PostgreSQL pool exhausted: Jobs retry and fail after 3 attempts
+- API server crashes: SDK continues silently, no data loss for enqueued jobs
+
+**Security Considerations:**
+- Current MVP: No authentication (assumes trusted network)
+- Production requirements: JWT tokens, rate limiting, input validation, TLS, encryption at rest
+
+**Deployment:**
+- **Local**: API server + worker in separate terminals
+- **Production**: 2+ API servers (load balanced), 3+ workers (redundancy), PostgreSQL with read replica, Redis with persistence
 
 ## SDK Usage
 

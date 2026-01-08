@@ -1,5 +1,7 @@
 # Quick Start Guide
 
+This guide covers setup steps only. For detailed usage, see [README.md](./README.md).
+
 ## 1. Setup Database
 
 ### Option A: Using Docker (Recommended - Easiest)
@@ -106,26 +108,18 @@ pnpm run build
 pnpm start
 ```
 
-The demo will:
-- Run a product matching pipeline
-- Make a bad decision (matches phone case to laptop stand)
-- Show the X-Ray run ID
-- Demonstrate how to query the API to find the root cause
+## 8. Start Worker (Required for Queue Processing)
 
-## 8. Query the API
-
-After running the demo, use the run ID to query:
+The backend uses BullMQ for reliable job processing. You need to run the worker in a separate terminal:
 
 ```bash
-# Get full run details
-curl "http://localhost:3000/runs/{run_id}"
-
-# Find steps with high rejection rates
-curl "http://localhost:3000/steps/query/high-rejection?threshold=0.5"
-
-# Get specific step with summary and candidates
-curl "http://localhost:3000/steps/{step_id}"
+cd backend
+pnpm run worker
+# Or in development mode:
+pnpm run dev:worker
 ```
+
+The worker processes jobs from Redis queues and writes to PostgreSQL. Without the worker, jobs will be enqueued but not processed.
 
 ## Troubleshooting
 
