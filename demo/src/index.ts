@@ -192,11 +192,13 @@ async function runPipeline() {
   // Flush any buffered requests
   await xray.flush();
 
-  // Wait for backend to process
-  await new Promise(resolve => setTimeout(resolve, 500));
+  // Wait for backend to process jobs (with polling)
+  const runId = run.getRunId();
+  console.log(`\n⏳ Waiting for jobs to be processed...`);
+  await waitForRun(runId, 10); // Wait up to 10 seconds
 
   // Demonstrate debugging flow
-  await debugRun(run.getRunId());
+  await debugRun(runId);
 }
 
 function calculateRelevanceScore(product: Product, query: string): number {
@@ -212,6 +214,32 @@ runPipeline().catch((error) => {
   process.exit(1);
 });
 
+/**
+ * Wait for a run to be created in the database (polling)
+ */
+async function waitForRun(runId: string, maxAttempts: number = 10): Promise<void> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const runRes = await fetch(`${apiUrl}/runs/${runId}`);
+      if (runRes.ok) {
+        const runJson = await runRes.json();
+        if (runJson.run_id) {
+          console.log(`✅ Run found in database`);
+          return;
+        }
+      }
+    } catch (error) {
+      // Ignore errors, keep polling
+    }
+    
+    // Wait 500ms before next attempt
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  
+  console.log(`⚠️  Warning: Run ${runId} not found in database after ${maxAttempts} attempts.`);
+  console.log(`   Make sure the worker is running: cd backend && pnpm run worker`);
+}
+
 async function debugRun(runId: string): Promise<void> {
   console.log(`\n${'='.repeat(70)}`);
   console.log(`🔍 DEBUGGING WORKFLOW - Finding Root Cause`);
@@ -220,13 +248,27 @@ async function debugRun(runId: string): Promise<void> {
   // Step 1: Fetch run details
   console.log('📋 Step 1: Fetching run details...');
   const runRes = await fetch(`${apiUrl}/runs/${runId}`);
+  
+  if (!runRes.ok) {
+    if (runRes.status === 404) {
+      console.log(`   ❌ Run ${runId} not found in database.`);
+      console.log(`   Make sure the worker is running: cd backend && pnpm run worker`);
+      return;
+    }
+    console.log(`   ❌ Error fetching run: ${runRes.status} ${runRes.statusText}`);
+    return;
+  }
+  
   const runJson = await runRes.json();
   console.log('   Run ID:', runJson.run_id);
   console.log('   Pipeline:', runJson.pipeline);
   console.log('   Status:', runJson.status);
-  console.log('   Duration:', 
-    new Date(runJson.ended_at).getTime() - new Date(runJson.started_at).getTime(), 
-    'ms');
+  
+  if (runJson.ended_at && runJson.started_at) {
+    console.log('   Duration:', 
+      new Date(runJson.ended_at).getTime() - new Date(runJson.started_at).getTime(), 
+      'ms');
+  }
 
   // Step 2: Find high-rejection steps
   console.log('\n🔎 Step 2: Querying for aggressive filter steps (>40% rejection)...');
