@@ -10,7 +10,7 @@ A decision X-Ray system for debugging non-deterministic, multi-step algorithmic 
 
 - Node.js 18+
 - pnpm (install with `npm install -g pnpm`)
-- Docker (recommended) OR PostgreSQL 12+ installed locally
+- Docker (recommended) OR PostgreSQL 12+ and Redis installed locally
 
 ### Setup
 
@@ -25,7 +25,7 @@ pnpm install
 
 **Option A: Using Docker (Recommended)**
 ```bash
-# Start PostgreSQL in Docker
+# Start PostgreSQL and Redis in Docker
 docker-compose up -d
 ```
 
@@ -46,14 +46,27 @@ cp .env.example .env
 # Edit .env with your database credentials
 ```
 
-4. **Start backend server**
+4. **Start backend server and worker**
 
+The backend uses BullMQ for reliable job processing. You need to run both the API server and the worker:
+
+**Terminal 1 - API Server:**
 ```bash
 cd backend
 pnpm run build
 pnpm start
 # Server runs on http://localhost:3000
 ```
+
+**Terminal 2 - Worker (processes jobs from queue):**
+```bash
+cd backend
+pnpm run worker
+# Or in development mode:
+pnpm run dev:worker
+```
+
+The API server enqueues jobs to Redis, and the worker processes them asynchronously. This provides better reliability and allows the API to respond quickly without blocking on database operations.
 
 5. **Run demo pipeline**
 
@@ -200,10 +213,14 @@ x-ray-system/
 │   │   ├── step.ts   # Step class
 │   │   └── client.ts # HTTP client
 │   └── package.json
-├── backend/          # Backend API (Express + PostgreSQL)
+├── backend/          # Backend API (Express + PostgreSQL + BullMQ)
 │   ├── src/
 │   │   ├── index.ts           # Server entry
-│   │   ├── routes/            # API routes
+│   │   ├── worker.ts          # BullMQ worker (processes jobs)
+│   │   ├── routes/            # API routes (enqueue jobs)
+│   │   ├── queue/             # Queue configuration and processors
+│   │   │   ├── config.ts      # BullMQ queue setup
+│   │   │   └── processors/    # Business logic processors
 │   │   ├── models/            # Data access layer
 │   │   └── db/                # Database schema
 │   └── package.json
@@ -230,9 +247,13 @@ cd demo && pnpm run build
 ### Running in Development
 
 ```bash
-# Backend (with ts-node)
+# Backend API Server (with ts-node)
 cd backend
 pnpm run dev
+
+# Backend Worker (in separate terminal)
+cd backend
+pnpm run dev:worker
 
 # Demo (with ts-node)
 cd demo
