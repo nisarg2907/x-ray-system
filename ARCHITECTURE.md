@@ -128,6 +128,32 @@ This works across:
 
 **Observability must never break production logic.**
 
+## Developer Experience
+
+X-Ray is designed for minimal friction when integrating into existing pipelines. The system supports different levels of instrumentation based on developer needs.
+
+**Minimal instrumentation**
+- Start a run
+- Create steps at decision points
+- Record step summaries only
+
+This requires only a few lines of code and provides basic observability (input/output counts, rejection rates, step timing). Summary-level data enables cross-pipeline queries and identifies problematic steps without detailed candidate logging.
+
+**Full instrumentation**
+- Optional candidate-level logging for specific steps
+- Sampling strategies (top-N, bottom-N, random-N) for high-volume steps
+- Rich metadata per step for context
+
+Developers can incrementally add candidate logging where it provides the most debugging value, without impacting performance of high-throughput steps.
+
+**Backend unavailability**
+- SDK never throws exceptions
+- All operations are fire-and-forget
+- Observability is best-effort
+- Pipelines continue unaffected even if the backend is down
+
+This ensures that observability infrastructure issues never impact production pipeline execution.
+
 ## Queue Design
 
 The queue sits behind the API to decouple ingestion from persistence.
@@ -153,6 +179,26 @@ Reads bypass the queue and query PostgreSQL directly.
 5. Fix filter logic
 
 This pinpoints where and why the decision went wrong.
+
+**Example API call:**
+```bash
+GET /steps/query/high-rejection?threshold=0.9
+```
+
+Returns all filter steps across all pipelines that rejected more than 90% of candidates, enabling rapid identification of overly aggressive filters.
+
+## Real-World Application
+
+In previous work on ranking and recommendation pipelines, debugging incorrect results often required correlating logs across multiple services and re-running pipelines with verbose logging. When a user received irrelevant recommendations, identifying the root cause involved:
+
+1. Checking application logs for errors (rarely found)
+2. Inspecting intermediate ranking scores (scattered across services)
+3. Re-running the pipeline with debug flags to capture full state
+4. Manually tracing through filter logic to find where good candidates were dropped
+
+X-Ray-style visibility would allow inspecting which filters eliminated candidates, how ranking scores differed between runs, and why a specific item was selected—all without reproducing the issue or adding ad-hoc logs. The cross-pipeline query capability would also reveal systemic issues (e.g., "all category filters are too strict") that might be missed when debugging individual pipelines in isolation.
+
+This system could be retrofitted incrementally by wrapping existing decision points with step summaries and selectively enabling candidate sampling for problematic runs, providing immediate value without requiring a complete rewrite.
 
 ## Design Trade-offs
 
@@ -565,6 +611,19 @@ All validation errors return a descriptive error message indicating which requir
 - This enables retry logic without side effects
 
 ---
+
+## Future Work
+
+The current design prioritizes safety, simplicity, and developer experience. Future enhancements could include:
+
+- **Configurable retention policies** for candidate data to manage storage costs while preserving summaries
+- **Stronger delivery guarantees** via optional SDK acknowledgements for critical observability events
+- **Authentication, multi-tenancy, and rate limiting** for production deployments
+- **UI for visualizing decision flows** to make debugging more intuitive
+- **Integration with tracing systems** (e.g., OpenTelemetry) for unified observability
+- **Real-time alerting** on anomalous rejection rates or step performance degradation
+
+These extensions would build on the existing foundation without requiring changes to the core data model or API design.
 
 ## Summary
 
